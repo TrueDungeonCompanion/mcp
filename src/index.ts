@@ -5,7 +5,7 @@
  * rulebook pages) as MCP tools so Claude can look up rules and token effects.
  *
  * Environment variables:
- *   TDC_API_BASE_URL  — API base URL (default: https://tdcompanion.app)
+ *   TDC_API_BASE_URL  — API base URL (default: https://api.tdcompanion.app)
  *   TDC_API_KEY       — optional Bearer key for higher rate limits
  */
 
@@ -16,8 +16,80 @@ import * as api from './api.js';
 
 const server = new McpServer({
   name: '@tdcompanion/mcp-server',
-  version: '1.0.0',
+  version: '1.1.0',
 });
+
+// ── Shared helpers ────────────────────────────────────────────────────────────
+
+type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
+
+const safe = <A>(fn: (a: A) => Promise<ToolResult>) =>
+  async (a: A): Promise<ToolResult> => {
+    try {
+      return await fn(a);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      return { content: [{ type: 'text', text: `Error: ${msg}` }], isError: true };
+    }
+  };
+
+const MAX_CHARS = 20_000;
+
+function clip(text: string, itemNoun = 'items'): string {
+  if (text.length <= MAX_CHARS) return text;
+  const cut = text.lastIndexOf('\n', MAX_CHARS);
+  const boundary = cut > 0 ? cut : MAX_CHARS;
+  const head = text.slice(0, boundary);
+  const droppedLines = text.slice(boundary).split('\n').filter(l => l.trim()).length;
+  return `${head}\n\n…${droppedLines} more ${itemNoun} truncated. Narrow your query (use \`take\`, more specific filters, or \`get_*\` tools for full detail).`;
+}
+
+function stripHtml(html: string): string {
+  return html
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<\/?\s*(p|div|section|article|header|footer|h[1-6]|tr|table|thead|tbody)\b[^>]*>/gi, '\n')
+    .replace(/<\s*li\b[^>]*>/gi, '\n- ')
+    .replace(/<\/\s*li\s*>/gi, '')
+    .replace(/<\/?\s*[uo]l\b[^>]*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#?39;|&apos;/g, "'")
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+const SLOT_VALUES = ['Head','Neck','Shoulders','Torso','Arms','Hands','Waist','Legs','Feet','Mainhand','Offhand','Ring','Ear','Eyes','Back','Bead','Charm','Ioun Stone'] as const;
+const RARITY_VALUES = ['Common','Uncommon','Rare','UltraRare','Legendary','Relic','Transmuted'] as const;
+const CLASS_VALUES = ['Fighter','Barbarian','Ranger','Rogue','Monk','Paladin','Cleric','Druid','Wizard','Warlock','Bard','Elf'] as const;
+
+const Skip = z.number().int().min(0).optional().describe('Pagination offset (default 0)');
+const Take = z.number().int().min(1).max(200).optional().describe('Page size, 1–200 (default 50)');
+
+const csvOf = (allowed: readonly string[], label: string) =>
+  z.string().optional().refine(
+    v => !v || v.split(',').every(s => allowed.includes(s.trim())),
+    { message: `Each ${label} value must be one of: ${allowed.join(', ')}` },
+  );
+
+// ── Formatters ────────────────────────────────────────────────────────────────
+
+const formatTokenSummary = (t: api.TokenSummary) =>
+  `**${t.name}** (${t.rarity}) — ${t.tokenText || 'No effect text'}${t.slug ? ` [slug: ${t.slug}]` : ''}`;
+
+const formatBonusTiers = (b: { tiers: api.BonusTier[] }) =>
+  b.tiers.map(t =>
+    `  ${t.tokens} tokens: ${t.effects.map(e => e.displayText).join('; ') || '(none)'}`
+  ).join('\n');
+
+const formatBonus = (b: api.SetBonus | api.GroupBonus) =>
+  `**${b.name}** (${b.id})\n${formatBonusTiers(b)}`;
 
 // ── Token tools ───────────────────────────────────────────────────────────────
 
@@ -26,24 +98,21 @@ server.tool(
   'Search True Dungeon tokens by name, equipment slot, rarity, or usable class. Returns a paginated list of matching tokens with name, rarity, and effect summary.',
   {
     q: z.string().optional().describe('Name search (substring match)'),
-    slot: z.string().optional().describe('Comma-separated slot names: Head, Neck, Shoulders, Torso, Arms, Hands, Waist, Legs, Feet, Mainhand, Offhand, Ring, Ear, Eyes, Back, Bead, Charm, Ioun Stone'),
-    rarity: z.string().optional().describe('Comma-separated rarities: Common, Uncommon, Rare, UltraRare, Legendary, Relic, Transmuted'),
-    class: z.string().optional().describe('Comma-separated classes: Fighter, Barbarian, Ranger, Rogue, Monk, Paladin, Cleric, Druid, Wizard, Warlock, Bard, Elf'),
-    skip: z.number().optional().describe('Pagination offset (default 0)'),
-    take: z.number().optional().describe('Page size, max 200 (default 50)'),
+    slot: csvOf(SLOT_VALUES, 'slot').describe('Comma-separated slot names: Head, Neck, Shoulders, Torso, Arms, Hands, Waist, Legs, Feet, Mainhand, Offhand, Ring, Ear, Eyes, Back, Bead, Charm, Ioun Stone'),
+    rarity: csvOf(RARITY_VALUES, 'rarity').describe('Comma-separated rarities: Common, Uncommon, Rare, UltraRare, Legendary, Relic, Transmuted'),
+    class: csvOf(CLASS_VALUES, 'class').describe('Comma-separated classes: Fighter, Barbarian, Ranger, Rogue, Monk, Paladin, Cleric, Druid, Wizard, Warlock, Bard, Elf'),
+    skip: Skip,
+    take: Take,
   },
-  async (params) => {
+  safe(async (params: { q?: string; slot?: string; rarity?: string; class?: string; skip?: number; take?: number }) => {
     const result = await api.searchTokens(params);
-    const summary = result.items.map(t =>
-      `**${t.name}** (${t.rarity}) — ${t.tokenText || 'No effect text'}${t.slug ? ` [slug: ${t.slug}]` : ''}`
-    ).join('\n');
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Found ${result.total} tokens (showing ${result.skip + 1}–${result.skip + result.items.length}):\n\n${summary}`,
-      }],
-    };
-  },
+    const summary = result.items.map(formatTokenSummary).join('\n');
+    const text = clip(
+      `Found ${result.total} tokens (showing ${result.skip + 1}–${result.skip + result.items.length}):\n\n${summary}`,
+      'tokens',
+    );
+    return { content: [{ type: 'text', text }] };
+  }),
 );
 
 server.tool(
@@ -52,25 +121,27 @@ server.tool(
   {
     id_or_slug: z.string().describe('Token slug (e.g. "charm-of-avarice") or database ID'),
   },
-  async ({ id_or_slug }) => {
+  safe(async ({ id_or_slug }: { id_or_slug: string }) => {
     const t = await api.getToken(id_or_slug);
-    const effects = t.effects?.map(e => `  - [${e.type}] ${e.displayText}`).join('\n') || '  (none)';
-    const text = [
+    const effects = t.effects?.length
+      ? t.effects.map(e => `  - [${e.type}] ${e.displayText}`).join('\n')
+      : '  (none)';
+    const lines: (string | null)[] = [
       `# ${t.name}`,
       `**Rarity:** ${t.rarity}`,
-      `**Slots:** ${t.slots?.join(', ') || '—'}`,
-      `**Usable By:** ${t.usableBy?.join(', ') || '—'}`,
+      t.slots?.length ? `**Slots:** ${t.slots.join(', ')}` : null,
+      t.usableBy?.length ? `**Usable By:** ${t.usableBy.join(', ')}` : null,
       t.handedness ? `**Handedness:** ${t.handedness}` : null,
       t.weaponAttackMode && t.weaponAttackMode !== 'None' ? `**Attack Mode:** ${t.weaponAttackMode}` : null,
       t.damageWheel?.length ? `**Damage Wheel:** ${t.damageWheel.join(', ')}` : null,
-      `**Years:** ${t.years?.join(', ') || '—'}`,
+      t.years?.length ? `**Years:** ${t.years.join(', ')}` : null,
       t.tags?.length ? `**Tags:** ${t.tags.join(', ')}` : null,
-      `\n**Token Text:** ${t.tokenText || '—'}`,
+      `\n**Token Text:** ${t.tokenText || '_(no in-game text)_'}`,
       `\n**Effects:**\n${effects}`,
       t.description ? `\n**Description:**\n${t.description}` : null,
-    ].filter(Boolean).join('\n');
-    return { content: [{ type: 'text' as const, text }] };
-  },
+    ];
+    return { content: [{ type: 'text', text: lines.filter(Boolean).join('\n') }] };
+  }),
 );
 
 server.tool(
@@ -109,21 +180,30 @@ Numeric fields (use GreaterThan/GreaterThanOrEqual/LessThan/LessThanOrEqual/Equa
 }`,
   {
     filter: z.string().describe('FilterExpression JSON (see tool description for schema)'),
-    skip: z.number().optional().describe('Pagination offset (default 0)'),
-    take: z.number().optional().describe('Page size, max 200 (default 50)'),
+    skip: Skip,
+    take: Take,
   },
-  async ({ filter, skip, take }) => {
+  safe(async ({ filter, skip, take }: { filter: string; skip?: number; take?: number }) => {
+    let parsed: any;
+    try {
+      parsed = JSON.parse(filter);
+    } catch (e: any) {
+      throw new Error(`filter is not valid JSON: ${e?.message ?? e}`);
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('filter must be a JSON object (a FilterExpression group or condition)');
+    }
+    if (parsed.$type !== 'group' && parsed.$type !== 'condition') {
+      throw new Error('filter root must have "$type" of "group" or "condition"');
+    }
     const result = await api.advancedSearchTokens(filter, skip, take);
-    const summary = result.items.map(t =>
-      `**${t.name}** (${t.rarity}) — ${t.tokenText || 'No effect text'}${t.slug ? ` [slug: ${t.slug}]` : ''}`
-    ).join('\n');
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Found ${result.total} tokens (showing ${result.skip + 1}–${result.skip + result.items.length}):\n\n${summary}`,
-      }],
-    };
-  },
+    const summary = result.items.map(formatTokenSummary).join('\n');
+    const text = clip(
+      `Found ${result.total} tokens (showing ${result.skip + 1}–${result.skip + result.items.length}):\n\n${summary}`,
+      'tokens',
+    );
+    return { content: [{ type: 'text', text }] };
+  }),
 );
 
 // ── Bonus tools ───────────────────────────────────────────────────────────────
@@ -131,43 +211,49 @@ Numeric fields (use GreaterThan/GreaterThanOrEqual/LessThan/LessThanOrEqual/Equa
 server.tool(
   'list_set_bonuses',
   'List all True Dungeon set bonuses with their tier effects. Set bonuses grant effects when a player equips multiple tokens from the same set.',
-  {
-    skip: z.number().optional().describe('Pagination offset'),
-    take: z.number().optional().describe('Page size (default 100)'),
-  },
-  async ({ skip, take }) => {
+  { skip: Skip, take: Take },
+  safe(async ({ skip, take }: { skip?: number; take?: number }) => {
     const result = await api.listSetBonuses(skip, take);
-    const lines = result.items.map(b => {
-      const tiers = b.tiers.map(t =>
-        `  ${t.tokens} tokens: ${t.effects.map(e => e.displayText).join('; ') || '(none)'}`
-      ).join('\n');
-      return `**${b.name}** (${b.id})\n${tiers}`;
-    });
-    return {
-      content: [{ type: 'text' as const, text: `${result.total} set bonuses:\n\n${lines.join('\n\n')}` }],
-    };
-  },
+    const text = clip(
+      `${result.total} set bonuses:\n\n${result.items.map(formatBonus).join('\n\n')}`,
+      'set bonuses',
+    );
+    return { content: [{ type: 'text', text }] };
+  }),
+);
+
+server.tool(
+  'get_set_bonus',
+  'Get a single True Dungeon set bonus by its id, with all tier effects.',
+  { id: z.string().describe('Set bonus id (from list_set_bonuses)') },
+  safe(async ({ id }: { id: string }) => {
+    const b = await api.getSetBonus(id);
+    return { content: [{ type: 'text', text: formatBonus(b) }] };
+  }),
 );
 
 server.tool(
   'list_group_bonuses',
   'List all True Dungeon group bonuses with their tier effects. Group bonuses grant effects when multiple party members equip qualifying tokens.',
-  {
-    skip: z.number().optional().describe('Pagination offset'),
-    take: z.number().optional().describe('Page size (default 100)'),
-  },
-  async ({ skip, take }) => {
+  { skip: Skip, take: Take },
+  safe(async ({ skip, take }: { skip?: number; take?: number }) => {
     const result = await api.listGroupBonuses(skip, take);
-    const lines = result.items.map(b => {
-      const tiers = b.tiers.map(t =>
-        `  ${t.tokens} tokens: ${t.effects.map(e => e.displayText).join('; ') || '(none)'}`
-      ).join('\n');
-      return `**${b.name}** (${b.id})\n${tiers}`;
-    });
-    return {
-      content: [{ type: 'text' as const, text: `${result.total} group bonuses:\n\n${lines.join('\n\n')}` }],
-    };
-  },
+    const text = clip(
+      `${result.total} group bonuses:\n\n${result.items.map(formatBonus).join('\n\n')}`,
+      'group bonuses',
+    );
+    return { content: [{ type: 'text', text }] };
+  }),
+);
+
+server.tool(
+  'get_group_bonus',
+  'Get a single True Dungeon group bonus by its id, with all tier effects.',
+  { id: z.string().describe('Group bonus id (from list_group_bonuses)') },
+  safe(async ({ id }: { id: string }) => {
+    const b = await api.getGroupBonus(id);
+    return { content: [{ type: 'text', text: formatBonus(b) }] };
+  }),
 );
 
 // ── Rulebook tools ────────────────────────────────────────────────────────────
@@ -176,45 +262,39 @@ server.tool(
   'list_rulebook_pages',
   'List all True Dungeon rulebook pages (id, title, path). Use this to find the right page before fetching its content.',
   {},
-  async () => {
+  safe(async () => {
     const result = await api.listRulebookPages();
     const lines = result.items.map(p =>
       `- **${p.title}** (path: ${p.path}, id: ${p.id})`
     ).join('\n');
-    return {
-      content: [{ type: 'text' as const, text: `${result.total} rulebook pages:\n\n${lines}` }],
-    };
-  },
+    const text = clip(`${result.total} rulebook pages:\n\n${lines}`, 'pages');
+    return { content: [{ type: 'text', text }] };
+  }),
 );
 
 server.tool(
   'get_rulebook_page',
-  'Get the full content of a True Dungeon rulebook page by its ID or path. Returns the page title and HTML body.',
+  'Get the full content of a True Dungeon rulebook page by its ID or path. Returns the page title and plain-text body.',
   {
     id_or_path: z.string().describe('Page ID or path (e.g. "combat/melee-attacks")'),
   },
-  async ({ id_or_path }) => {
+  safe(async ({ id_or_path }: { id_or_path: string }) => {
     const page = await api.getRulebookPage(id_or_path);
-    // Strip HTML tags for a cleaner text representation
-    const plainText = page.html
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/?(p|div|h[1-6]|li|tr)[^>]*>/gi, '\n')
-      .replace(/<[^>]+>/g, '')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&nbsp;/g, ' ')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim();
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `# ${page.title}\n\nPath: ${page.path}\n\n${plainText}`,
-      }],
-    };
-  },
+    const body = stripHtml(page.html);
+    return { content: [{ type: 'text', text: `# ${page.title}\n\nPath: ${page.path}\n\n${body}` }] };
+  }),
+);
+
+// ── Version tool ──────────────────────────────────────────────────────────────
+
+server.tool(
+  'get_api_version',
+  'Get the running TDC API build version and process start time. Useful for confirming MCP ↔ API connectivity and gating on server version.',
+  {},
+  safe(async () => {
+    const v = await api.getApiVersion();
+    return { content: [{ type: 'text', text: `TDC API ${v.apiVersion} (started ${v.startedAt})` }] };
+  }),
 );
 
 // ── Start ─────────────────────────────────────────────────────────────────────

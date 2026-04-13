@@ -156,3 +156,14 @@ export async function listRulebookPages(): Promise<PagedResult<RulebookPageSumma
 export async function getRulebookPage(idOrPath: string): Promise<RulebookPage> {
   return apiFetch(`/api/v1/rulebook/${encodeURIComponent(idOrPath)}`) as Promise<RulebookPage>;
 }
+
+// ── Version ───────────────────────────────────────────────────────────────────
+
+export interface ApiVersion {
+  apiVersion: string;
+  startedAt: string;
+}
+
+export async function getApiVersion(): Promise<ApiVersion> {
+  return apiFetch('/api/v1/version') as Promise<ApiVersion>;
+}

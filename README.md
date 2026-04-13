@@ -10,9 +10,12 @@ An [MCP](https://modelcontextprotocol.io) server that exposes True Dungeon Compa
 | `advanced_search_tokens` | Build arbitrary AND/OR filter trees across 29 fields (abilities, stats, damage, etc.) |
 | `get_token` | Get full detail for a single token (effects, slots, damage wheel, etc.) |
 | `list_set_bonuses` | List all set bonuses with tier effects |
+| `get_set_bonus` | Get a single set bonus by id |
 | `list_group_bonuses` | List all group bonuses with tier effects |
+| `get_group_bonus` | Get a single group bonus by id |
 | `list_rulebook_pages` | List all rulebook pages (title + path) |
 | `get_rulebook_page` | Get the full text content of a rulebook page |
+| `get_api_version` | Get the running TDC API build version and start time |
 
 ## Quick start (npx)
 
@@ -58,3 +61,14 @@ npm publish
 ```
 
 The `prepublishOnly` script runs the build automatically. The `files` field in package.json ensures only `dist/` is included in the published package.
+
+## Changelog
+
+### 1.1.0
+
+- Added `get_set_bonus`, `get_group_bonus`, and `get_api_version` tools.
+- Stricter input validation: pagination is clamped (`skip >= 0`, `take` 1–200), and `slot` / `rarity` / `class` reject unknown values up front.
+- `advanced_search_tokens` validates the `filter` JSON is a FilterExpression object before sending.
+- All tools return a clean `{ isError: true }` result on failure instead of throwing.
+- Rulebook HTML stripping now handles numeric entities (`&#x…;`, `&#…;`) and preserves list structure.
+- List-style tools truncate output over ~20k chars with a clear "…N more truncated" footer.
