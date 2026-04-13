@@ -1,0 +1,41 @@
+{
+  "name": "@tdcompanion/mcp-server",
+  "version": "1.0.1",
+  "description": "MCP server for the True Dungeon Companion API — exposes token, bonus, and rulebook data as tools for Claude and other MCP clients.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "tdcompanion-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "true-dungeon",
+    "rpg",
+    "claude",
+    "ai"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chaosiekinder/TrueDungeonCompanion",
+    "directory": "src/MCP/tdc-mcp-server"
+  },
+  "homepage": "https://tdcompanion.app/developers",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^5.6.0"
+  }
+}
