@@ -26,8 +26,15 @@ async function apiFetch(path: string, options?: { method?: string; body?: string
     body: options?.body,
   });
   if (!resp.ok) {
-    const body = await resp.text().catch(() => '');
-    throw new Error(`API ${resp.status}: ${resp.statusText} — ${body}`);
+    const raw = await resp.text().catch(() => '');
+    // ASP.NET ProblemDetails responses include title/detail — surface those instead of the raw body.
+    let friendly = raw;
+    try {
+      const parsed = JSON.parse(raw);
+      const pd = parsed?.detail ?? parsed?.error ?? parsed?.title;
+      if (pd) friendly = String(pd);
+    } catch { /* not JSON — fall back to raw */ }
+    throw new Error(`API ${resp.status} ${resp.statusText}: ${friendly}`);
   }
   const contentType = resp.headers.get('content-type') ?? '';
   if (!contentType.includes('json')) {
@@ -98,6 +105,34 @@ export async function advancedSearchTokens(filterJson: string, skip = 0, take = 
   return apiFetch(`/api/v1/tokens/search${qs}`, { method: 'POST', body: filterJson }) as Promise<PagedResult<TokenSummary>>;
 }
 
+export interface TokenBatchResult {
+  items: TokenDetail[];
+  notFound: string[];
+}
+
+export async function getTokensBatch(ids: string[]): Promise<TokenBatchResult> {
+  return apiFetch('/api/v1/tokens/batch', {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+  }) as Promise<TokenBatchResult>;
+}
+
+export interface BonusSummary {
+  id: string;
+  name: string;
+  tierCount: number;
+  minTokens: number;
+}
+
+export interface TokenBonuses {
+  sets: BonusSummary[];
+  groups: BonusSummary[];
+}
+
+export async function getBonusesForToken(idOrSlug: string): Promise<TokenBonuses> {
+  return apiFetch(`/api/v1/tokens/${encodeURIComponent(idOrSlug)}/bonuses`) as Promise<TokenBonuses>;
+}
+
 // ── Bonuses ───────────────────────────────────────────────────────────────────
 
 export interface BonusTier {
@@ -145,16 +180,45 @@ export interface RulebookPageSummary {
   updated: string;
 }
 
+export type RulebookFormat = 'html' | 'plaintext' | 'markdown';
+
 export interface RulebookPage extends RulebookPageSummary {
   html: string;
+  plaintext?: string;
+  markdown?: string;
 }
 
-export async function listRulebookPages(): Promise<PagedResult<RulebookPageSummary>> {
-  return apiFetch('/api/v1/rulebook') as Promise<PagedResult<RulebookPageSummary>>;
+export interface RulebookSearchHit {
+  id: string;
+  parentId?: string;
+  path: string;
+  title: string;
+  snippet: string;
+  score: number;
 }
 
-export async function getRulebookPage(idOrPath: string): Promise<RulebookPage> {
-  return apiFetch(`/api/v1/rulebook/${encodeURIComponent(idOrPath)}`) as Promise<RulebookPage>;
+// Rulebook index rarely changes — cache with a short TTL so repeated asks don't hammer the API.
+const RULEBOOK_INDEX_TTL_MS = 5 * 60 * 1000;
+let rulebookIndexCache: { expires: number; value: PagedResult<RulebookPageSummary> } | null = null;
+
+export async function listRulebookPages(opts?: { forceRefresh?: boolean }): Promise<PagedResult<RulebookPageSummary>> {
+  const now = Date.now();
+  if (!opts?.forceRefresh && rulebookIndexCache && rulebookIndexCache.expires > now) {
+    return rulebookIndexCache.value;
+  }
+  const value = await apiFetch('/api/v1/rulebook') as PagedResult<RulebookPageSummary>;
+  rulebookIndexCache = { expires: now + RULEBOOK_INDEX_TTL_MS, value };
+  return value;
+}
+
+export async function searchRulebook(q: string, skip = 0, take = 20): Promise<PagedResult<RulebookSearchHit>> {
+  const qs = new URLSearchParams({ q, skip: String(skip), take: String(take) });
+  return apiFetch(`/api/v1/rulebook/search?${qs}`) as Promise<PagedResult<RulebookSearchHit>>;
+}
+
+export async function getRulebookPage(idOrPath: string, format: RulebookFormat = 'markdown'): Promise<RulebookPage> {
+  const qs = format === 'html' ? '' : `?format=${format}`;
+  return apiFetch(`/api/v1/rulebook/${encodeURIComponent(idOrPath)}${qs}`) as Promise<RulebookPage>;
 }
 
 // ── Version ───────────────────────────────────────────────────────────────────
