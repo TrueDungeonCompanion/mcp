@@ -28,11 +28,17 @@ async function apiFetch(path: string, options?: { method?: string; body?: string
   if (!resp.ok) {
     const raw = await resp.text().catch(() => '');
     // ASP.NET ProblemDetails responses include title/detail — surface those instead of the raw body.
+    // The rulebook 404 path also includes a `didYouMean` array of nearest paths; append those so
+    // clients don't have to guess after a miss.
     let friendly = raw;
     try {
       const parsed = JSON.parse(raw);
       const pd = parsed?.detail ?? parsed?.error ?? parsed?.title;
       if (pd) friendly = String(pd);
+      const suggestions: unknown = parsed?.didYouMean;
+      if (Array.isArray(suggestions) && suggestions.length > 0) {
+        friendly += ` Did you mean: ${suggestions.map(s => String(s)).join(', ')}?`;
+      }
     } catch { /* not JSON — fall back to raw */ }
     throw new Error(`API ${resp.status} ${resp.statusText}: ${friendly}`);
   }
@@ -218,7 +224,12 @@ export async function searchRulebook(q: string, skip = 0, take = 20): Promise<Pa
 
 export async function getRulebookPage(idOrPath: string, format: RulebookFormat = 'markdown'): Promise<RulebookPage> {
   const qs = format === 'html' ? '' : `?format=${format}`;
-  return apiFetch(`/api/v1/rulebook/${encodeURIComponent(idOrPath)}${qs}`) as Promise<RulebookPage>;
+  // Strip leading/trailing slashes and encode segment-by-segment so `/` separators are preserved
+  // for the server's catch-all route. Full encodeURIComponent would turn `/` into `%2F`, which
+  // some proxies reject and which obscured what was really a hallucinated path in past traces.
+  const normalized = idOrPath.replace(/^\/+|\/+$/g, '');
+  const encoded = normalized.split('/').map(encodeURIComponent).join('/');
+  return apiFetch(`/api/v1/rulebook/${encoded}${qs}`) as Promise<RulebookPage>;
 }
 
 // ── Version ───────────────────────────────────────────────────────────────────

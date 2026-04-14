@@ -4,20 +4,37 @@
  * TDC MCP Server — exposes True Dungeon Companion game data (tokens, bonuses,
  * rulebook pages) as MCP tools so Claude can look up rules and token effects.
  *
+ * Transports:
+ *   - stdio (default)           — `node dist/index.js`
+ *   - Streamable HTTP + SSE     — `node dist/index.js --http` or `TDC_MCP_TRANSPORT=http`
+ *
  * Environment variables:
- *   TDC_API_BASE_URL  — API base URL (default: https://api.tdcompanion.app)
- *   TDC_API_KEY       — optional Bearer key for higher rate limits
+ *   TDC_API_BASE_URL     — API base URL (default: https://api.tdcompanion.app)
+ *   TDC_API_KEY          — optional Bearer key for higher rate limits
+ *   TDC_MCP_TRANSPORT    — "stdio" (default) or "http"
+ *   TDC_MCP_HTTP_PORT    — port for HTTP transport (default: 3333)
+ *   TDC_MCP_HTTP_HOST    — bind address for HTTP transport (default: 127.0.0.1)
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import * as api from './api.js';
+import { startHttpServer } from './httpServer.js';
 
-const server = new McpServer({
-  name: '@tdcompanion/mcp-server',
-  version: '1.2.0',
-});
+const SERVER_NAME = '@tdcompanion/mcp-server';
+const SERVER_VERSION = '1.4.0';
+
+/**
+ * Builds a fresh McpServer with every TDC tool registered. Exported as a factory
+ * because the Streamable HTTP transport (stateful mode) creates one server per session,
+ * while stdio reuses a single instance for the process lifetime.
+ */
+export function createServer(): McpServer {
+  const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
+  registerTools(server);
+  return server;
+}
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -190,6 +207,10 @@ const formatTokenDetail = (t: api.TokenDetail): string => {
   ];
   return lines.filter(Boolean).join('\n');
 };
+
+// ── Tool registration ─────────────────────────────────────────────────────────
+
+function registerTools(server: McpServer): void {
 
 // ── Token tools ───────────────────────────────────────────────────────────────
 
@@ -425,6 +446,41 @@ server.tool(
   }),
 );
 
+server.tool(
+  'lookup_rule',
+  'Best single-call rulebook lookup for natural-language rule questions (e.g. "flanking", "how does concentration work"). Runs search and auto-fetches the top-ranked page body in one roundtrip — prefer this over search_rulebook + get_rulebook_page when the user asks a rule question.',
+  {
+    q: z.string().min(2).describe('Rule question or keywords (min 2 chars).'),
+    format: z.enum(['markdown', 'plaintext']).optional().describe('Body format (default markdown).'),
+  },
+  safe(async ({ q, format }: { q: string; format?: 'markdown' | 'plaintext' }) => {
+    const fmt = format ?? 'markdown';
+    const hits = await api.searchRulebook(q, 0, 5);
+    if (hits.total === 0 || hits.items.length === 0) {
+      return { content: [{ type: 'text', text: `No rulebook hits for "${q}". Try list_rulebook_pages for the full index.` }] };
+    }
+    const top = hits.items[0];
+    const page = await api.getRulebookPage(top.path, fmt);
+    let body: string;
+    if (fmt === 'markdown' && page.markdown) body = page.markdown;
+    else if (page.plaintext) body = page.plaintext;
+    else body = stripHtml(page.html);
+
+    const alternatives = hits.items.slice(1)
+      .map(h => `  - **${h.title}** (path: ${h.path})`)
+      .join('\n');
+    const altSection = alternatives
+      ? `\n\n---\n_Other matches — use get_rulebook_page if none of the above answers the question:_\n${alternatives}`
+      : '';
+    const text = clip(
+      `# ${page.title}\n\nPath: ${page.path}\n\n${body}${altSection}`,
+      'lines',
+      MAX_CHARS_RULEBOOK,
+    );
+    return { content: [{ type: 'text', text }] };
+  }),
+);
+
 // ── Version tool ──────────────────────────────────────────────────────────────
 
 server.tool(
@@ -437,11 +493,27 @@ server.tool(
   }),
 );
 
+}
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 
+function selectTransport(): 'http' | 'stdio' {
+  if (process.argv.includes('--http')) return 'http';
+  if (process.env.TDC_MCP_TRANSPORT?.toLowerCase() === 'http') return 'http';
+  return 'stdio';
+}
+
 async function main() {
+  if (selectTransport() === 'http') {
+    const port = Number(process.env.TDC_MCP_HTTP_PORT ?? 3333);
+    const host = process.env.TDC_MCP_HTTP_HOST ?? '127.0.0.1';
+    await startHttpServer({ port, host, createServer });
+    return;
+  }
+
+  // stdio: single long-lived server, one transport tied to this process's stdio.
   const transport = new StdioServerTransport();
-  await server.connect(transport);
+  await createServer().connect(transport);
 }
 
 main().catch((err) => {
