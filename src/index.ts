@@ -208,6 +208,18 @@ const formatTokenDetail = (t: api.TokenDetail): string => {
   return lines.filter(Boolean).join('\n');
 };
 
+const formatEffectsRecord = (r: api.TokenEffectsRecord): string => {
+  const lines = r.effects.map((e, i) =>
+    `  ${i + 1}. [${String(e.$type)}] ${r.displayText[i] ?? ''}\n     ${JSON.stringify(e)}`);
+  return [
+    `# ${r.name} [slug: ${r.slug}] (id ${r.id})`,
+    `**Token Text:** ${r.tokenText || '_(no in-game text)_'}`,
+    `**isValid:** ${r.isValid}   **hasDamageWheel:** ${r.hasDamageWheel}`,
+    `\n**Effects (${r.effects.length}):**\n${lines.join('\n') || '  (none)'}`,
+    `\n**Accepted $type values:** ${r.knownEffectTypes.join(', ')}`,
+  ].join('\n');
+};
+
 // ── Tool registration ─────────────────────────────────────────────────────────
 
 function registerTools(server: McpServer): void {
@@ -482,6 +494,55 @@ server.tool(
 );
 
 // ── Version tool ──────────────────────────────────────────────────────────────
+
+// ── Token effect editing (ContentEditor API keys) ─────────────────────────────
+
+server.tool(
+  'get_token_effects',
+  'Read a token\'s typed effects in the editable JSON shape (beta record), plus isValid, whether a damage wheel is present, and the list of accepted effect $type values. Requires TDC_API_KEY belonging to a ContentEditor. Call this before update_token_effects so you edit the exact current list.',
+  {
+    id_or_slug: z.string().describe('Token slug (e.g. "dawn-helm") or database ID'),
+  },
+  safe(async ({ id_or_slug }: { id_or_slug: string }) => {
+    const r = await api.getTokenEffects(id_or_slug);
+    return { content: [{ type: 'text', text: formatEffectsRecord(r) }] };
+  }),
+);
+
+server.tool(
+  'update_token_effects',
+  `Replace a token's effects on the beta record and optionally set isValid. Requires TDC_API_KEY belonging to a ContentEditor; promotion to live remains an admin publish step.
+
+\`effects\` is a JSON array of polymorphic effect objects tagged with "$type". Field names are camelCase and enums are integers. Examples:
+  { "$type": "Stat", "stat": 12, "modifier": 1 }                      // StatEffectId AcMelee=12 AcRanged=11 MaxHp=13 SaveReflex=3 SaveWill=4 SaveFortitude=5 AttackBonusMelee=6 AttackBonusRanged=7 SpellHealing=10 Treasure=18
+  { "$type": "Ability", "ability": 0, "modifier": 2 }                 // AbilityScore STR=0 DEX=1 CON=2 WIS=3 INT=4 CHA=5
+  { "$type": "DamageBonus", "attackType": 4, "damageType": 2, "unit": 0, "value": 3 }   // AttackType Melee1H=2 Melee2H=3 Ranged=4 Spell=5 Polymorph=8 TwoHanded=9; DamageType Fire=2 Cold=3 Shock=4 Sonic=5 Sacred=7 Poison=9 Darkrift=10 Force=11
+  { "$type": "DamageReduction", "damageType": 3, "unit": 0, "value": 2 }
+  { "$type": "IfVsEnemy", "enemyType": 1, "effects": [ ... ] }         // EnemyType Undead=1 Giant=2 Accursed=12 Werekind=14 Outsider=16
+  { "$type": "IfClass", "classes": [8, 10], "effects": [ ... ] }       // CharacterClassId Barbarian=1 Bard=2 Cleric=3 Druid=4 DwarfFighter=5 ElfWizard=6 Fighter=7 Monk=8 Paladin=9 Ranger=10 Rogue=11 Wizard=12
+  { "$type": "ConditionImmunity", "condition": 2 }                    // ImmunityTag Charm=1 Fear=2 Sleep=3 Surprise=6 FreeMovement=7 IncorporealMissChance=24 Blighted=28
+  { "$type": "CriticalRange", "minCritRoll": 19 }
+  { "$type": "HealOnHit", "amount": 1 }
+  { "$type": "SlotChange", "slot": 3, "modifier": 1 }                 // TokenSlot Bead=3 Waist=7 Ring=16 Charm=19 IounStone=20
+  { "$type": "Descriptive", "description": "narrative clause" }
+Call get_token_effects first: knownEffectTypes lists every accepted $type and the current effects show exact field names. Unknown $type → 400 with the accepted list. A weapon cannot be marked valid without a damage wheel (400).`,
+  {
+    id_or_slug: z.string().describe('Token slug or database ID'),
+    effects: z.string().describe('JSON array of $type-tagged effect objects (see tool description)'),
+    is_valid: z.boolean().optional().describe('Set the token\'s isValid flag; omit to leave it unchanged'),
+  },
+  safe(async ({ id_or_slug, effects, is_valid }: { id_or_slug: string; effects: string; is_valid?: boolean }) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(effects);
+    } catch (e) {
+      throw new Error(`effects is not valid JSON: ${(e as Error).message}`);
+    }
+    if (!Array.isArray(parsed)) throw new Error('effects must be a JSON array of effect objects');
+    const r = await api.updateTokenEffects(id_or_slug, parsed as Record<string, unknown>[], is_valid);
+    return { content: [{ type: 'text', text: `Updated.\n\n${formatEffectsRecord(r)}` }] };
+  }),
+);
 
 server.tool(
   'get_api_version',

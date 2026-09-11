@@ -242,3 +242,34 @@ export interface ApiVersion {
 export async function getApiVersion(): Promise<ApiVersion> {
   return apiFetch('/api/v1/version') as Promise<ApiVersion>;
 }
+
+// ── Token effects (write access; requires an API key whose owner is a ContentEditor) ──
+
+export interface TokenEffectsRecord {
+  id: string;
+  slug: string;
+  name: string;
+  tokenText: string;
+  isValid: boolean;
+  hasDamageWheel: boolean;
+  effects: Record<string, unknown>[];
+  displayText: string[];
+  knownEffectTypes: string[];
+}
+
+export async function getTokenEffects(idOrSlug: string): Promise<TokenEffectsRecord> {
+  return apiFetch(`/api/v1/tokens/${encodeURIComponent(idOrSlug)}/effects`) as Promise<TokenEffectsRecord>;
+}
+
+export async function updateTokenEffects(
+  idOrSlug: string,
+  effects: Record<string, unknown>[],
+  isValid?: boolean,
+): Promise<TokenEffectsRecord> {
+  const body: Record<string, unknown> = { effects };
+  if (isValid !== undefined) body.isValid = isValid;
+  return apiFetch(`/api/v1/tokens/${encodeURIComponent(idOrSlug)}/effects`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  }) as Promise<TokenEffectsRecord>;
+}
