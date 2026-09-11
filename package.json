@@ -30,8 +30,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/chaosiekinder/TrueDungeonCompanion",
-    "directory": "src/MCP/tdc-mcp-server"
+    "url": "git+https://github.com/TrueDungeonCompanion/mcp.git"
   },
   "homepage": "https://tdcompanion.app/developers",
   "dependencies": {
