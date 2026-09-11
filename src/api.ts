@@ -243,7 +243,7 @@ export async function getApiVersion(): Promise<ApiVersion> {
   return apiFetch('/api/v1/version') as Promise<ApiVersion>;
 }
 
-// ── Token effects (write access; requires an API key whose owner is a ContentEditor) ──
+// ── Token effects (read is open; update requires an API key whose owner is a ContentEditor) ──
 
 export interface TokenEffectsRecord {
   id: string;

@@ -16,7 +16,7 @@ An [MCP](https://modelcontextprotocol.io) server that exposes True Dungeon Compa
 | `list_rulebook_pages` | List all rulebook pages (title + path) |
 | `get_rulebook_page` | Get the full text content of a rulebook page |
 | `get_api_version` | Get the running TDC API build version and start time |
-| `get_token_effects` | Read a token's typed effects in editable JSON form (ContentEditor key) |
+| `get_token_effects` | Read a token's typed effects in editable JSON form |
 | `update_token_effects` | Replace a token's effects / set isValid on the beta record (ContentEditor key) |
 
 ## Quick start (npx)
@@ -42,7 +42,7 @@ No install or build needed. Add to your `.claude/settings.json`:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TDC_API_BASE_URL` | `https://api.tdcompanion.app` | API base URL (must point at the API host, not the web app) |
-| `TDC_API_KEY` | _(none)_ | Bearer key: higher rate limits (600 req/min vs 60); a ContentEditor's key also unlocks the token-effect write tools |
+| `TDC_API_KEY` | _(none)_ | Bearer key: higher rate limits (600 req/min vs 60); a ContentEditor's key also unlocks `update_token_effects` |
 
 The server works without an API key (anonymous access), but authenticated keys get 10x the rate limit. Generate one from your profile's Developer tab at https://tdcompanion.app/profile.
 

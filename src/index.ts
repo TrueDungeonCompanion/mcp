@@ -495,11 +495,11 @@ server.tool(
 
 // ── Version tool ──────────────────────────────────────────────────────────────
 
-// ── Token effect editing (ContentEditor API keys) ─────────────────────────────
+// ── Token effects (read is open; update requires a ContentEditor API key) ─────
 
 server.tool(
   'get_token_effects',
-  'Read a token\'s typed effects in the editable JSON shape (beta record), plus isValid, whether a damage wheel is present, and the list of accepted effect $type values. Requires TDC_API_KEY belonging to a ContentEditor. Call this before update_token_effects so you edit the exact current list.',
+  'Read a token\'s typed effects in the editable JSON shape (beta record), plus isValid, whether a damage wheel is present, and the list of accepted effect $type values. Read-only; no API key required. Call this before update_token_effects so you edit the exact current list.',
   {
     id_or_slug: z.string().describe('Token slug (e.g. "dawn-helm") or database ID'),
   },
